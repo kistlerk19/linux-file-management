@@ -1,0 +1,15 @@
+File Synchronization Log - Started at Thu May 15 12:36:20 GMT 2025
+Source: /Users/verlock/workflows/bash_projects/sync_dir1
+Destination: /Users/verlock/workflows/bash_projects/sync_dir2
+Conflict Strategy: prompt
+Dry Run: false
+Exclude Pattern: 
+-----------------------------------
+2025-05-15 12:36:20 [INFO] Synchronizing from source to destination...
+2025-05-15 12:36:20 [INFO] Copied file: mainsd.py (src-to-dest)
+2025-05-15 12:36:20 [INFO] Finished src-to-dest synchronization: processed 0 files, copied 0, skipped 0, conflicts 0
+2025-05-15 12:36:20 [INFO] Synchronizing from destination to source...
+2025-05-15 12:36:20 [INFO] Finished dest-to-src synchronization: processed 0 files, copied 0, skipped 0, conflicts 0
+2025-05-15 12:36:20 [INFO] Checking for files to delete...
+2025-05-15 12:36:20 [INFO] Deletion synchronization complete
+2025-05-15 12:36:20 [INFO] Synchronization completed successfully
