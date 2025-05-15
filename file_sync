@@ -2,7 +2,7 @@
 
 # File Synchronization Utility
 # A two-way file synchronization tool with conflict resolution
-# Usage: ./file_sync.sh [source_dir] [destination_dir] [options]
+# Usage: ./file_sync [source_dir] [destination_dir] [options]
 
 # Colors for terminal output
 RED='\033[0;31m'

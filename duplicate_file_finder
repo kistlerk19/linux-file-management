@@ -2,7 +2,6 @@
 
 # Duplicate File Finder
 # This script finds duplicate files in a specified directory based on file size and content.
-# It offers options to delete or move duplicate files.
 
 # Display usage instructions
 display_usage() {

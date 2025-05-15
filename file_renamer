@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 
 # Bulk File Renamer - A tool to rename multiple files using patterns and rules
-# Usage: ./bulk_file_renamer.sh [options]
+# Usage: ./file_renamer [options]
 
 set -e  # Exit on error
 

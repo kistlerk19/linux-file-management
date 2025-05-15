@@ -130,10 +130,6 @@ chmod +x file_sorter file_renamer file_renamer duplicate_file_finder file_backup
 ./file_sync source_dir target_dir [options]
 ```
 
-## Configuration
-
-Each script can be configured by editing the corresponding configuration file in the `config` directory or by passing command-line options.
-
 ## Dependencies
 
 - Bash 4.0+

@@ -1,8 +1,6 @@
 #!/usr/bin/env bash
 
 # Disk Space Analyzer - A tool to analyze disk space usage with tree-like structure
-# Author: Claude
-# Version: 1.0
 
 # ANSI color codes for better visualization
 RESET="\033[0m"
