@@ -1,0 +1,541 @@
+#!/usr/bin/env bash
+
+# File Synchronization Utility
+# A two-way file synchronization tool with conflict resolution
+# Usage: ./file_sync.sh [source_dir] [destination_dir] [options]
+
+# Colors for terminal output
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[0;33m'
+BLUE='\033[0;34m'
+NC='\033[0m' # No Color
+
+VERSION="1.0.0"
+
+# Default values
+LOG_FILE="sync_$(date +%Y%m%d_%H%M%S).log"
+CONFLICT_STRATEGY="prompt"
+DRY_RUN=false
+VERBOSE=false
+EXCLUDE_PATTERN=""
+
+# Function to print the script usage
+print_usage() {
+    echo -e "${BLUE}File Synchronization Utility v${VERSION}${NC}"
+    echo "Usage: $0 [source_dir] [destination_dir] [options]"
+    echo
+    echo "Options:"
+    echo "  -h, --help                  Show this help message"
+    echo "  -l, --log [file]            Specify log file (default: ${LOG_FILE})"
+    echo "  -c, --conflict [strategy]   Conflict resolution strategy:"
+    echo "                              prompt (default), source-wins, dest-wins, newest, keep-both"
+    echo "  -d, --dry-run               Simulation mode, no actual changes"
+    echo "  -v, --verbose               Verbose output"
+    echo "  -e, --exclude [pattern]     Exclude files matching pattern"
+    echo
+    echo "Examples:"
+    echo "  $0 ~/Documents/work ~/Backup/work"
+    echo "  $0 /path/to/source /path/to/dest --conflict newest --verbose"
+    exit 1
+}
+
+# Function to log messages
+log_message() {
+    local level=$1
+    local message=$2
+    local timestamp=$(date +"%Y-%m-%d %H:%M:%S")
+    
+    echo -e "${timestamp} [${level}] ${message}" >> "${LOG_FILE}"
+    
+    case $level in
+        "INFO")
+            if [[ "$VERBOSE" == true ]]; then
+                echo -e "${GREEN}[INFO]${NC} ${message}"
+            fi
+            ;;
+        "WARNING")
+            echo -e "${YELLOW}[WARNING]${NC} ${message}"
+            ;;
+        "ERROR")
+            echo -e "${RED}[ERROR]${NC} ${message}"
+            ;;
+        "CONFLICT")
+            echo -e "${BLUE}[CONFLICT]${NC} ${message}"
+            ;;
+    esac
+}
+
+# Function to check if a directory exists and is accessible
+check_directory() {
+    local dir=$1
+    local dir_type=$2
+    
+    if [[ ! -d "$dir" ]]; then
+        log_message "ERROR" "${dir_type} directory does not exist: $dir"
+        exit 1
+    fi
+    
+    if [[ ! -r "$dir" || ! -w "$dir" ]]; then
+        log_message "ERROR" "Insufficient permissions for ${dir_type} directory: $dir"
+        exit 1
+    fi
+    
+    # Convert to absolute path
+    dir=$(realpath "$dir")
+    echo "$dir"
+}
+
+# Function to resolve conflicts based on the selected strategy
+resolve_conflict() {
+    local src_file=$1
+    local dest_file=$2
+    local rel_path=$3
+    
+    local src_mtime=$(stat -c %Y "$src_file")
+    local dest_mtime=$(stat -c %Y "$dest_file")
+    
+    case "$CONFLICT_STRATEGY" in
+        "source-wins")
+            log_message "CONFLICT" "Conflict resolved (source-wins): $rel_path"
+            return 0  # Copy source to destination
+            ;;
+        "dest-wins")
+            log_message "CONFLICT" "Conflict resolved (dest-wins): $rel_path"
+            return 1  # Copy destination to source
+            ;;
+        "newest")
+            if [[ $src_mtime -gt $dest_mtime ]]; then
+                log_message "CONFLICT" "Conflict resolved (newest): Source is newer: $rel_path"
+                return 0  # Source is newer
+            else
+                log_message "CONFLICT" "Conflict resolved (newest): Destination is newer: $rel_path"
+                return 1  # Destination is newer
+            fi
+            ;;
+        "keep-both")
+            # Create unique filenames for both versions
+            local timestamp=$(date +%Y%m%d_%H%M%S)
+            local src_new="${src_file}_${timestamp}_src"
+            local dest_new="${dest_file}_${timestamp}_dest"
+            
+            if [[ "$DRY_RUN" == false ]]; then
+                cp "$src_file" "$src_new"
+                cp "$dest_file" "$dest_new"
+            fi
+            log_message "CONFLICT" "Created copies of both files: $rel_path"
+            return 2  # Both files kept
+            ;;
+        "prompt")
+            echo -e "\n${BLUE}CONFLICT DETECTED${NC}: $rel_path"
+            echo -e "Source modified: $(date -d @$src_mtime '+%Y-%m-%d %H:%M:%S')"
+            echo -e "Destination modified: $(date -d @$dest_mtime '+%Y-%m-%d %H:%M:%S')"
+            echo "How would you like to resolve this conflict?"
+            echo "1) Use source version (s)"
+            echo "2) Use destination version (d)"
+            echo "3) Keep newest version (n)"
+            echo "4) Keep both versions (b)"
+            echo "5) Skip this file (skip)"
+            
+            local choice
+            read -p "Enter your choice (s/d/n/b/skip): " choice
+            
+            case "$choice" in
+                "s")
+                    log_message "CONFLICT" "User selected source version: $rel_path"
+                    return 0  # Source wins
+                    ;;
+                "d")
+                    log_message "CONFLICT" "User selected destination version: $rel_path"
+                    return 1  # Destination wins
+                    ;;
+                "n")
+                    if [[ $src_mtime -gt $dest_mtime ]]; then
+                        log_message "CONFLICT" "User selected newest (source): $rel_path"
+                        return 0  # Source is newer
+                    else
+                        log_message "CONFLICT" "User selected newest (destination): $rel_path"
+                        return 1  # Destination is newer
+                    fi
+                    ;;
+                "b")
+                    # Create unique filenames for both versions
+                    local timestamp=$(date +%Y%m%d_%H%M%S)
+                    local src_new="${src_file}_${timestamp}_src"
+                    local dest_new="${dest_file}_${timestamp}_dest"
+                    
+                    if [[ "$DRY_RUN" == false ]]; then
+                        cp "$src_file" "$src_new"
+                        cp "$dest_file" "$dest_new"
+                    fi
+                    log_message "CONFLICT" "User selected to keep both versions: $rel_path"
+                    return 2  # Both files kept
+                    ;;
+                "skip")
+                    log_message "CONFLICT" "User selected to skip file: $rel_path"
+                    return 3  # Skip
+                    ;;
+                *)
+                    log_message "WARNING" "Invalid choice, skipping file: $rel_path"
+                    return 3  # Skip as default for invalid input
+                    ;;
+            esac
+            ;;
+    esac
+}
+
+# Function to compare files using md5sum
+files_are_identical() {
+    local file1=$1
+    local file2=$2
+    
+    local md5_1=$(md5sum "$file1" | cut -d ' ' -f 1)
+    local md5_2=$(md5sum "$file2" | cut -d ' ' -f 1)
+    
+    [[ "$md5_1" == "$md5_2" ]]
+}
+
+# Function to synchronize files between directories
+sync_files() {
+    local src_dir=$1
+    local dest_dir=$2
+    local direction=$3  # "src-to-dest" or "dest-to-src"
+    
+    local primary_dir secondary_dir
+    if [[ "$direction" == "src-to-dest" ]]; then
+        primary_dir="$src_dir"
+        secondary_dir="$dest_dir"
+        log_message "INFO" "Synchronizing from source to destination..."
+    else
+        primary_dir="$dest_dir"
+        secondary_dir="$src_dir"
+        log_message "INFO" "Synchronizing from destination to source..."
+    fi
+    
+    # Tracking counters
+    local files_processed=0
+    local files_copied=0
+    local files_skipped=0
+    local conflicts=0
+    
+    # Find all files in the primary directory recursively
+    find "$primary_dir" -type f | while read -r file_path; do
+        # Skip files matching exclude pattern if specified
+        if [[ -n "$EXCLUDE_PATTERN" && "$file_path" =~ $EXCLUDE_PATTERN ]]; then
+            log_message "INFO" "Excluded file: ${file_path#$primary_dir/}"
+            continue
+        fi
+        
+        # Get relative path from the primary directory
+        local rel_path="${file_path#$primary_dir/}"
+        local secondary_file="$secondary_dir/$rel_path"
+        local src_file dest_file
+        
+        if [[ "$direction" == "src-to-dest" ]]; then
+            src_file="$file_path"
+            dest_file="$secondary_file"
+        else
+            dest_file="$file_path"
+            src_file="$secondary_file"
+        fi
+        
+        ((files_processed++))
+        
+        # If the directory for the secondary file doesn't exist, create it
+        local secondary_dir_path=$(dirname "$secondary_file")
+        if [[ ! -d "$secondary_dir_path" ]]; then
+            if [[ "$DRY_RUN" == false ]]; then
+                mkdir -p "$secondary_dir_path"
+            fi
+            log_message "INFO" "Created directory: ${secondary_dir_path#$secondary_dir/}"
+        fi
+        
+        # Check if the file exists in the secondary directory
+        if [[ ! -f "$secondary_file" ]]; then
+            # File doesn't exist in the secondary directory, copy it
+            if [[ "$DRY_RUN" == false ]]; then
+                cp "$file_path" "$secondary_file"
+                # Preserve timestamps
+                touch -r "$file_path" "$secondary_file"
+            fi
+            
+            log_message "INFO" "Copied file: $rel_path ($direction)"
+            ((files_copied++))
+        else
+            # File exists in both directories, check if they are different
+            if ! files_are_identical "$file_path" "$secondary_file"; then
+                # Files are different, need to resolve conflict
+                log_message "CONFLICT" "Files differ: $rel_path"
+                ((conflicts++))
+                
+                # Resolve based on the selected strategy
+                local resolution
+                if [[ "$direction" == "src-to-dest" ]]; then
+                    resolve_conflict "$src_file" "$dest_file" "$rel_path"
+                    resolution=$?
+                else
+                    resolve_conflict "$src_file" "$dest_file" "$rel_path"
+                    # Invert the resolution for dest-to-src direction
+                    if [[ $? -eq 0 ]]; then
+                        resolution=1
+                    elif [[ $? -eq 1 ]]; then
+                        resolution=0
+                    else
+                        resolution=$?
+                    fi
+                fi
+                
+                case $resolution in
+                    0)  # Source wins
+                        if [[ "$DRY_RUN" == false ]]; then
+                            cp "$src_file" "$dest_file"
+                            touch -r "$src_file" "$dest_file"
+                        fi
+                        log_message "INFO" "Updated destination file: $rel_path (source version)"
+                        ((files_copied++))
+                        ;;
+                    1)  # Destination wins
+                        if [[ "$DRY_RUN" == false ]]; then
+                            cp "$dest_file" "$src_file"
+                            touch -r "$dest_file" "$src_file"
+                        fi
+                        log_message "INFO" "Updated source file: $rel_path (destination version)"
+                        ((files_copied++))
+                        ;;
+                    2)  # Keep both
+                        log_message "INFO" "Kept both versions: $rel_path"
+                        ((files_skipped++))
+                        ;;
+                    3)  # Skip
+                        log_message "INFO" "Skipped file: $rel_path"
+                        ((files_skipped++))
+                        ;;
+                esac
+            else
+                # Files are identical, no action needed
+                if [[ "$VERBOSE" == true ]]; then
+                    log_message "INFO" "Files are identical: $rel_path"
+                fi
+                ((files_skipped++))
+            fi
+        fi
+    done
+    
+    log_message "INFO" "Finished $direction synchronization: processed $files_processed files, copied $files_copied, skipped $files_skipped, conflicts $conflicts"
+    
+    # Return statistics
+    echo "$files_processed $files_copied $files_skipped $conflicts"
+}
+
+# Function to perform deletion synchronization
+sync_deletions() {
+    local src_dir=$1
+    local dest_dir=$2
+    
+    log_message "INFO" "Checking for files to delete..."
+    
+    # Find files in dest that don't exist in src
+    find "$dest_dir" -type f | while read -r dest_file; do
+        local rel_path="${dest_file#$dest_dir/}"
+        local src_file="$src_dir/$rel_path"
+        
+        # Skip files matching exclude pattern if specified
+        if [[ -n "$EXCLUDE_PATTERN" && "$rel_path" =~ $EXCLUDE_PATTERN ]]; then
+            log_message "INFO" "Excluded file from deletion check: $rel_path"
+            continue
+        fi
+        
+        if [[ ! -f "$src_file" ]]; then
+            log_message "WARNING" "File exists in destination but not in source: $rel_path"
+            
+            local delete=false
+            
+            if [[ "$CONFLICT_STRATEGY" == "prompt" ]]; then
+                echo -e "\n${YELLOW}File exists only in destination${NC}: $rel_path"
+                read -p "Do you want to (d)elete from destination, (c)opy to source, or (s)kip? [d/c/s]: " choice
+                
+                case "$choice" in
+                    "d")
+                        delete=true
+                        log_message "INFO" "User chose to delete file from destination: $rel_path"
+                        ;;
+                    "c")
+                        # Copy to source
+                        if [[ "$DRY_RUN" == false ]]; then
+                            # Create directory structure if needed
+                            local src_dir_path=$(dirname "$src_file")
+                            if [[ ! -d "$src_dir_path" ]]; then
+                                mkdir -p "$src_dir_path"
+                            fi
+                            
+                            cp "$dest_file" "$src_file"
+                            # Preserve timestamp
+                            touch -r "$dest_file" "$src_file"
+                        fi
+                        log_message "INFO" "User chose to copy file to source: $rel_path"
+                        ;;
+                    *)
+                        log_message "INFO" "User chose to skip file: $rel_path"
+                        ;;
+                esac
+            elif [[ "$CONFLICT_STRATEGY" == "source-wins" ]]; then
+                # If source wins, delete from destination
+                delete=true
+                log_message "INFO" "Deleting file based on source-wins strategy: $rel_path"
+            elif [[ "$CONFLICT_STRATEGY" == "dest-wins" ]]; then
+                # If destination wins, copy to source
+                if [[ "$DRY_RUN" == false ]]; then
+                    # Create directory structure if needed
+                    local src_dir_path=$(dirname "$src_file")
+                    if [[ ! -d "$src_dir_path" ]]; then
+                        mkdir -p "$src_dir_path"
+                    fi
+                    
+                    cp "$dest_file" "$src_file"
+                    # Preserve timestamp
+                    touch -r "$dest_file" "$src_file"
+                fi
+                log_message "INFO" "Copying file to source based on dest-wins strategy: $rel_path"
+            elif [[ "$CONFLICT_STRATEGY" == "keep-both" ]]; then
+                # For keep-both, we always preserve files
+                log_message "INFO" "Keeping file based on keep-both strategy: $rel_path"
+            elif [[ "$CONFLICT_STRATEGY" == "newest" ]]; then
+                # For newest strategy, we'd want to copy to source
+                if [[ "$DRY_RUN" == false ]]; then
+                    # Create directory structure if needed
+                    local src_dir_path=$(dirname "$src_file")
+                    if [[ ! -d "$src_dir_path" ]]; then
+                        mkdir -p "$src_dir_path"
+                    fi
+                    
+                    cp "$dest_file" "$src_file"
+                    # Preserve timestamp
+                    touch -r "$dest_file" "$src_file"
+                fi
+                log_message "INFO" "Copying file to source based on newest strategy: $rel_path"
+            fi
+            
+            if [[ "$delete" == true && "$DRY_RUN" == false ]]; then
+                rm "$dest_file"
+                log_message "INFO" "Deleted file from destination: $rel_path"
+            fi
+        fi
+    done
+    
+    # Find files in src that don't exist in dest (handled by the main sync_files function)
+    
+    log_message "INFO" "Deletion synchronization complete"
+}
+
+# Parse command line arguments
+if [[ $# -lt 2 ]]; then
+    print_usage
+fi
+
+SRC_DIR=$1
+DEST_DIR=$2
+shift 2
+
+while [[ $# -gt 0 ]]; do
+    case $1 in
+        -h|--help)
+            print_usage
+            ;;
+        -l|--log)
+            LOG_FILE="$2"
+            shift 2
+            ;;
+        -c|--conflict)
+            CONFLICT_STRATEGY="$2"
+            shift 2
+            ;;
+        -d|--dry-run)
+            DRY_RUN=true
+            shift
+            ;;
+        -v|--verbose)
+            VERBOSE=true
+            shift
+            ;;
+        -e|--exclude)
+            EXCLUDE_PATTERN="$2"
+            shift 2
+            ;;
+        *)
+            echo -e "${RED}Error: Unknown option $1${NC}"
+            print_usage
+            ;;
+    esac
+done
+
+# Check if conflict strategy is valid
+if [[ ! "$CONFLICT_STRATEGY" =~ ^(prompt|source-wins|dest-wins|newest|keep-both)$ ]]; then
+    echo -e "${RED}Error: Invalid conflict resolution strategy: $CONFLICT_STRATEGY${NC}"
+    print_usage
+fi
+
+# Check and validate directories
+SRC_DIR=$(check_directory "$SRC_DIR" "Source")
+DEST_DIR=$(check_directory "$DEST_DIR" "Destination")
+
+# Print initial information
+echo -e "${BLUE}File Synchronization Utility v${VERSION}${NC}"
+echo -e "Source directory: ${GREEN}$SRC_DIR${NC}"
+echo -e "Destination directory: ${GREEN}$DEST_DIR${NC}"
+echo -e "Log file: ${GREEN}$LOG_FILE${NC}"
+echo -e "Conflict strategy: ${GREEN}$CONFLICT_STRATEGY${NC}"
+if [[ "$DRY_RUN" == true ]]; then
+    echo -e "${YELLOW}Running in DRY RUN mode - no actual changes will be made${NC}"
+fi
+if [[ -n "$EXCLUDE_PATTERN" ]]; then
+    echo -e "Excluding files matching: ${YELLOW}$EXCLUDE_PATTERN${NC}"
+fi
+
+# Initialize log file with a header
+mkdir -p "$(dirname "$LOG_FILE")"
+echo "File Synchronization Log - Started at $(date)" > "$LOG_FILE"
+echo "Source: $SRC_DIR" >> "$LOG_FILE"
+echo "Destination: $DEST_DIR" >> "$LOG_FILE"
+echo "Conflict Strategy: $CONFLICT_STRATEGY" >> "$LOG_FILE"
+echo "Dry Run: $DRY_RUN" >> "$LOG_FILE"
+echo "Exclude Pattern: $EXCLUDE_PATTERN" >> "$LOG_FILE"
+echo "-----------------------------------" >> "$LOG_FILE"
+
+# Execute the synchronization
+echo -e "\n${BLUE}Starting synchronization...${NC}"
+
+# Sync from source to destination
+src_to_dest_stats=$(sync_files "$SRC_DIR" "$DEST_DIR" "src-to-dest")
+src_processed=$(echo $src_to_dest_stats | cut -d ' ' -f 1)
+src_copied=$(echo $src_to_dest_stats | cut -d ' ' -f 2)
+src_skipped=$(echo $src_to_dest_stats | cut -d ' ' -f 3)
+src_conflicts=$(echo $src_to_dest_stats | cut -d ' ' -f 4)
+
+# Sync from destination to source
+dest_to_src_stats=$(sync_files "$DEST_DIR" "$SRC_DIR" "dest-to-src")
+dest_processed=$(echo $dest_to_src_stats | cut -d ' ' -f 1)
+dest_copied=$(echo $dest_to_src_stats | cut -d ' ' -f 2)
+dest_skipped=$(echo $dest_to_src_stats | cut -d ' ' -f 3)
+dest_conflicts=$(echo $dest_to_src_stats | cut -d ' ' -f 4)
+
+# Handle deletions (files that exist in one directory but not the other)
+sync_deletions "$SRC_DIR" "$DEST_DIR"
+
+# Print summary
+total_processed=$((src_processed + dest_processed))
+total_copied=$((src_copied + dest_copied))
+total_conflicts=$((src_conflicts + dest_conflicts))
+
+echo -e "\n${BLUE}Synchronization Complete${NC}"
+echo -e "Total files processed: ${GREEN}$total_processed${NC}"
+echo -e "Files copied/updated: ${GREEN}$total_copied${NC}"
+echo -e "Conflicts detected: ${YELLOW}$total_conflicts${NC}"
+echo -e "Log file: ${GREEN}$LOG_FILE${NC}"
+
+if [[ "$DRY_RUN" == true ]]; then
+    echo -e "\n${YELLOW}This was a DRY RUN - no actual changes were made${NC}"
+    echo -e "Run without the --dry-run option to perform actual synchronization"
+fi
+
+log_message "INFO" "Synchronization completed successfully"
+echo -e "\n${GREEN}Done!${NC}"

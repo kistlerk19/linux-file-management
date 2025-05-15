@@ -1,0 +1,287 @@
+#!/usr/bin/env bash
+
+# ===========================================================
+# FILE BACKUP SYSTEM
+# ===========================================================
+# Features:
+# - Full and incremental backups
+# - Compression options (zip, tar.gz)
+# - Backup scheduling via crontab
+# - Detailed logging
+# - Configurable backup retention
+
+# Default settings
+SOURCE_DIR="$HOME/data"
+BACKUP_DIR="$HOME/backups"
+BACKUP_TYPE="full"
+COMPRESS_FORMAT="tar.gz"
+LOG_FILE="$HOME/backups/backup.log"
+RETENTION_DAYS=30
+DATE_FORMAT=$(date +"%Y-%m-%d_%H-%M-%S")
+
+# Function to display usage information
+show_usage() {
+    echo "Usage: $0 [OPTIONS]"
+    echo "OPTIONS:"
+    echo "  -s, --source DIR       Source directory to backup (default: $SOURCE_DIR)"
+    echo "  -d, --destination DIR  Destination directory for backups (default: $BACKUP_DIR)"
+    echo "  -t, --type TYPE        Backup type: full or incremental (default: $BACKUP_TYPE)"
+    echo "  -c, --compress FORMAT  Compression format: zip or tar.gz (default: $COMPRESS_FORMAT)"
+    echo "  -r, --retention DAYS   Number of days to keep backups (default: $RETENTION_DAYS)"
+    echo "  -l, --log FILE         Log file path (default: $LOG_FILE)"
+    echo "  --schedule SCHEDULE    Schedule backup using crontab (e.g., '0 3 * * *' for daily at 3am)"
+    echo "  -h, --help             Display this help message"
+    exit 1
+}
+
+# Function to log messages
+log_message() {
+    local MESSAGE="$1"
+    local TIMESTAMP=$(date +"%Y-%m-%d %H:%M:%S")
+    echo "[$TIMESTAMP] $MESSAGE" | tee -a "$LOG_FILE"
+}
+
+# Function to create directory if it doesn't exist
+create_dir_if_not_exists() {
+    local DIR="$1"
+    if [ ! -d "$DIR" ]; then
+        mkdir -p "$DIR"
+        log_message "Created directory: $DIR"
+    fi
+}
+
+# Function to perform a full backup
+perform_full_backup() {
+    local SOURCE="$1"
+    local DESTINATION="$2"
+    local COMPRESS="$3"
+    local BACKUP_NAME="full_backup_$DATE_FORMAT"
+    
+    log_message "Starting full backup of $SOURCE to $DESTINATION/$BACKUP_NAME"
+    
+    create_dir_if_not_exists "$DESTINATION"
+    
+    # Create backup based on compression format
+    if [ "$COMPRESS" = "zip" ]; then
+        zip -r "$DESTINATION/$BACKUP_NAME.zip" "$SOURCE" 2>> "$LOG_FILE"
+        BACKUP_FILE="$DESTINATION/$BACKUP_NAME.zip"
+    else # tar.gz
+        tar -czf "$DESTINATION/$BACKUP_NAME.tar.gz" -C "$(dirname "$SOURCE")" "$(basename "$SOURCE")" 2>> "$LOG_FILE"
+        BACKUP_FILE="$DESTINATION/$BACKUP_NAME.tar.gz"
+    fi
+    
+    if [ $? -eq 0 ]; then
+        log_message "Full backup completed successfully: $BACKUP_FILE"
+        # Create a reference file for incremental backups
+        find "$SOURCE" -type f -print0 | xargs -0 stat --format="%n %Y" > "$DESTINATION/last_backup_reference.txt"
+        log_message "Created reference file for incremental backups"
+    else
+        log_message "ERROR: Full backup failed"
+    fi
+}
+
+# Function to perform an incremental backup
+perform_incremental_backup() {
+    local SOURCE="$1"
+    local DESTINATION="$2"
+    local COMPRESS="$3"
+    local BACKUP_NAME="incremental_backup_$DATE_FORMAT"
+    local REFERENCE_FILE="$DESTINATION/last_backup_reference.txt"
+    local TEMP_DIR="$DESTINATION/temp_incremental"
+    
+    log_message "Starting incremental backup of $SOURCE to $DESTINATION/$BACKUP_NAME"
+    
+    create_dir_if_not_exists "$DESTINATION"
+    
+    # Check if reference file exists
+    if [ ! -f "$REFERENCE_FILE" ]; then
+        log_message "No reference file found. Performing full backup instead."
+        perform_full_backup "$SOURCE" "$DESTINATION" "$COMPRESS"
+        return
+    fi
+    
+    # Create temporary directory for changed files
+    create_dir_if_not_exists "$TEMP_DIR"
+    
+    # Find files that have changed since last backup
+    log_message "Finding changed files since last backup..."
+    while read -r FILE_INFO; do
+        FILE_PATH=$(echo "$FILE_INFO" | cut -d' ' -f1)
+        LAST_MOD=$(echo "$FILE_INFO" | cut -d' ' -f2)
+        
+        # Check if file still exists and if modification time has changed
+        if [ -f "$FILE_PATH" ]; then
+            CURRENT_MOD=$(stat --format="%Y" "$FILE_PATH")
+            if [ "$CURRENT_MOD" -gt "$LAST_MOD" ]; then
+                RELATIVE_PATH="${FILE_PATH#$SOURCE/}"
+                TARGET_DIR="$TEMP_DIR/$(dirname "$RELATIVE_PATH")"
+                create_dir_if_not_exists "$TARGET_DIR"
+                cp "$FILE_PATH" "$TARGET_DIR/"
+                log_message "Added changed file: $FILE_PATH"
+            fi
+        fi
+    done < "$REFERENCE_FILE"
+    
+    # Also add files that don't exist in the reference file (new files)
+    find "$SOURCE" -type f | while read -r FILE_PATH; do
+        if ! grep -q "$FILE_PATH" "$REFERENCE_FILE"; then
+            RELATIVE_PATH="${FILE_PATH#$SOURCE/}"
+            TARGET_DIR="$TEMP_DIR/$(dirname "$RELATIVE_PATH")"
+            create_dir_if_not_exists "$TARGET_DIR"
+            cp "$FILE_PATH" "$TARGET_DIR/"
+            log_message "Added new file: $FILE_PATH"
+        fi
+    done
+    
+    # Create backup of changed files
+    if [ -n "$(ls -A "$TEMP_DIR" 2>/dev/null)" ]; then
+        if [ "$COMPRESS" = "zip" ]; then
+            (cd "$TEMP_DIR" && zip -r "$DESTINATION/$BACKUP_NAME.zip" .) 2>> "$LOG_FILE"
+            BACKUP_FILE="$DESTINATION/$BACKUP_NAME.zip"
+        else # tar.gz
+            tar -czf "$DESTINATION/$BACKUP_NAME.tar.gz" -C "$TEMP_DIR" . 2>> "$LOG_FILE"
+            BACKUP_FILE="$DESTINATION/$BACKUP_NAME.tar.gz"
+        fi
+        
+        if [ $? -eq 0 ]; then
+            log_message "Incremental backup completed successfully: $BACKUP_FILE"
+            # Update reference file
+            find "$SOURCE" -type f -print0 | xargs -0 stat --format="%n %Y" > "$REFERENCE_FILE"
+            log_message "Updated reference file for next incremental backup"
+        else
+            log_message "ERROR: Incremental backup failed"
+        fi
+    else
+        log_message "No changes detected since last backup"
+    fi
+    
+    # Clean up temporary directory
+    rm -rf "$TEMP_DIR"
+}
+
+# Function to schedule backups using crontab
+schedule_backup() {
+    local SCHEDULE="$1"
+    local CURRENT_SCRIPT="$(realpath "$0")"
+    local CRON_CMD="$SCHEDULE $CURRENT_SCRIPT"
+    
+    log_message "Scheduling backup with crontab: $SCHEDULE"
+    
+    # Check if already scheduled
+    crontab -l 2>/dev/null | grep -q "$CURRENT_SCRIPT"
+    if [ $? -eq 0 ]; then
+        # Update existing schedule
+        (crontab -l 2>/dev/null | grep -v "$CURRENT_SCRIPT" ; echo "$CRON_CMD") | crontab -
+    else
+        # Add new schedule
+        (crontab -l 2>/dev/null ; echo "$CRON_CMD") | crontab -
+    fi
+    
+    if [ $? -eq 0 ]; then
+        log_message "Backup scheduled successfully"
+    else
+        log_message "ERROR: Failed to schedule backup"
+    fi
+}
+
+# Function to cleanup old backups
+cleanup_old_backups() {
+    local BACKUP_DIR="$1"
+    local RETENTION_DAYS="$2"
+    
+    log_message "Cleaning up backups older than $RETENTION_DAYS days..."
+    
+    find "$BACKUP_DIR" -name "full_backup_*.tar.gz" -o -name "full_backup_*.zip" -o -name "incremental_backup_*.tar.gz" -o -name "incremental_backup_*.zip" -type f -mtime +$RETENTION_DAYS -exec rm {} \;
+    
+    if [ $? -eq 0 ]; then
+        log_message "Old backups cleaned up successfully"
+    else
+        log_message "WARNING: Failed to clean up some old backups"
+    fi
+}
+
+# Parse command line arguments
+while [[ $# -gt 0 ]]; do
+    key="$1"
+    case $key in
+        -s|--source)
+            SOURCE_DIR="$2"
+            shift 2
+            ;;
+        -d|--destination)
+            BACKUP_DIR="$2"
+            shift 2
+            ;;
+        -t|--type)
+            BACKUP_TYPE="$2"
+            shift 2
+            ;;
+        -c|--compress)
+            COMPRESS_FORMAT="$2"
+            shift 2
+            ;;
+        -r|--retention)
+            RETENTION_DAYS="$2"
+            shift 2
+            ;;
+        -l|--log)
+            LOG_FILE="$2"
+            shift 2
+            ;;
+        --schedule)
+            SCHEDULE="$2"
+            shift 2
+            ;;
+        -h|--help)
+            show_usage
+            ;;
+        *)
+            echo "Unknown option: $1"
+            show_usage
+            ;;
+    esac
+done
+
+# Validate options
+if [ ! -d "$SOURCE_DIR" ]; then
+    log_message "ERROR: Source directory does not exist: $SOURCE_DIR"
+    exit 1
+fi
+
+if [[ "$BACKUP_TYPE" != "full" && "$BACKUP_TYPE" != "incremental" ]]; then
+    log_message "ERROR: Invalid backup type: $BACKUP_TYPE (must be 'full' or 'incremental')"
+    exit 1
+fi
+
+if [[ "$COMPRESS_FORMAT" != "zip" && "$COMPRESS_FORMAT" != "tar.gz" ]]; then
+    log_message "ERROR: Invalid compression format: $COMPRESS_FORMAT (must be 'zip' or 'tar.gz')"
+    exit 1
+fi
+
+# Create log file directory if it doesn't exist
+create_dir_if_not_exists "$(dirname "$LOG_FILE")"
+
+# Schedule backup if requested
+if [ -n "$SCHEDULE" ]; then
+    schedule_backup "$SCHEDULE"
+    exit 0
+fi
+
+# Perform backup
+log_message "Starting backup process with parameters:"
+log_message "  Source: $SOURCE_DIR"
+log_message "  Destination: $BACKUP_DIR"
+log_message "  Type: $BACKUP_TYPE"
+log_message "  Compression: $COMPRESS_FORMAT"
+log_message "  Retention: $RETENTION_DAYS days"
+
+if [ "$BACKUP_TYPE" = "full" ]; then
+    perform_full_backup "$SOURCE_DIR" "$BACKUP_DIR" "$COMPRESS_FORMAT"
+else
+    perform_incremental_backup "$SOURCE_DIR" "$BACKUP_DIR" "$COMPRESS_FORMAT"
+fi
+
+# Cleanup old backups
+cleanup_old_backups "$BACKUP_DIR" "$RETENTION_DAYS"
+
+log_message "Backup process completed"

@@ -1,0 +1,242 @@
+#!/usr/bin/env bash
+
+# Duplicate File Finder
+# This script finds duplicate files in a specified directory based on file size and content.
+# It offers options to delete or move duplicate files.
+
+# Display usage instructions
+display_usage() {
+    echo "Usage: $0 [directory_path]"
+    echo "If no directory is specified, the current directory will be used."
+    echo
+}
+
+# Check if help option is provided
+if [[ "$1" == "--help" || "$1" == "-h" ]]; then
+    display_usage
+    exit 0
+fi
+
+# Determine directory to scan
+if [ -z "$1" ]; then
+    DIR="."
+    echo "No directory specified. Scanning current directory."
+else
+    DIR="$1"
+    # Check if the specified directory exists
+    if [ ! -d "$DIR" ]; then
+        echo "Error: Directory '$DIR' not found."
+        exit 1
+    fi
+fi
+
+# Create temporary directory for the script
+TEMP_DIR=$(mktemp -d)
+if [ $? -ne 0 ]; then
+    echo "Error: Failed to create temporary directory."
+    exit 1
+fi
+
+# Cleanup function to remove temporary files
+cleanup() {
+    rm -rf "$TEMP_DIR"
+    echo -e "\nCleaning up temporary files..."
+}
+
+# Register cleanup function to be called on exit
+trap cleanup EXIT
+
+echo "Finding duplicate files in: $DIR"
+
+# Step 1: Group files by size
+echo "Step 1: Grouping files by size..."
+find "$DIR" -type f -not -empty | while read file; do
+    size=$(stat -c %s "$file")
+    echo "$size $file" >> "$TEMP_DIR/sizes.txt"
+done
+
+# Sort the files by size
+sort -n "$TEMP_DIR/sizes.txt" > "$TEMP_DIR/sizes_sorted.txt"
+
+# Group files by size
+echo "Step 2: Identifying potential duplicates based on size..."
+curr_size=""
+potential_duplicates=0
+
+cat "$TEMP_DIR/sizes_sorted.txt" | while read line; do
+    size=$(echo $line | cut -d ' ' -f1)
+    file=$(echo $line | cut -d ' ' -f2-)
+    
+    if [ "$curr_size" != "$size" ]; then
+        curr_size=$size
+        echo -e "\n$size" > "$TEMP_DIR/group_$size"
+    fi
+    
+    # Append file to the current size group
+    echo "$file" >> "$TEMP_DIR/group_$size"
+done
+
+# Step 3: For each size group with more than one file, compare by content (MD5 hash)
+echo "Step 3: Computing file hashes to find exact duplicates..."
+echo "0" > "$TEMP_DIR/dup_count"
+
+# Find all size group files
+for group_file in "$TEMP_DIR"/group_*; do
+    # Count lines in file (minus the size line)
+    count=$(wc -l < "$group_file")
+    if [ "$count" -gt 2 ]; then
+        size=$(head -n 1 "$group_file")
+        echo "Checking files of size $size bytes..."
+        
+        # Skip the first line (size) and process the files
+        tail -n +2 "$group_file" | while read file; do
+            # Compute hash and store in format: hash file
+            md5=$(md5sum "$file" | cut -d ' ' -f1)
+            echo "$md5 $file" >> "$TEMP_DIR/hashes.txt"
+        done
+    fi
+done
+
+# If there are no hashes file, there are no potential duplicates
+if [ ! -f "$TEMP_DIR/hashes.txt" ]; then
+    echo "No duplicate files found."
+    exit 0
+fi
+
+# Sort hashes to group identical files
+sort "$TEMP_DIR/hashes.txt" > "$TEMP_DIR/hashes_sorted.txt"
+
+# Step 4: Group files by hash and identify duplicates
+echo "Step 4: Identifying duplicate files..."
+dup_count=0
+total_space=0
+curr_hash=""
+group_count=0
+declare -a current_group
+
+while read line; do
+    hash=$(echo $line | cut -d ' ' -f1)
+    file=$(echo $line | cut -d ' ' -f2-)
+    
+    if [ "$curr_hash" != "$hash" ]; then
+        # Process previous group if it had duplicates
+        if [ ${#current_group[@]} -gt 1 ]; then
+            group_count=$((group_count + 1))
+            echo -e "\nDuplicate Group $group_count:" >> "$TEMP_DIR/duplicates.txt"
+            
+            # Output the original file (first in group)
+            echo "Original: ${current_group[0]}" >> "$TEMP_DIR/duplicates.txt"
+            
+            # Calculate size of duplicates
+            file_size=$(stat -c %s "${current_group[0]}")
+            wasted_space=$((file_size * (${#current_group[@]} - 1)))
+            total_space=$((total_space + wasted_space))
+            
+            # Output the duplicates
+            for ((i=1; i<${#current_group[@]}; i++)); do
+                echo "Duplicate $i: ${current_group[$i]}" >> "$TEMP_DIR/duplicates.txt"
+                dup_count=$((dup_count + 1))
+            done
+            
+            echo "Size: $file_size bytes ($(($file_size / 1024)) KB)" >> "$TEMP_DIR/duplicates.txt"
+        fi
+        
+        # Start new group
+        curr_hash=$hash
+        current_group=()
+    fi
+    
+    # Add file to current group
+    current_group+=("$file")
+    
+done < "$TEMP_DIR/hashes_sorted.txt"
+
+# Process the last group
+if [ ${#current_group[@]} -gt 1 ]; then
+    group_count=$((group_count + 1))
+    echo -e "\nDuplicate Group $group_count:" >> "$TEMP_DIR/duplicates.txt"
+    
+    # Output the original file (first in group)
+    echo "Original: ${current_group[0]}" >> "$TEMP_DIR/duplicates.txt"
+    
+    # Calculate size of duplicates
+    file_size=$(stat -c %s "${current_group[0]}")
+    wasted_space=$((file_size * (${#current_group[@]} - 1)))
+    total_space=$((total_space + wasted_space))
+    
+    # Output the duplicates
+    for ((i=1; i<${#current_group[@]}; i++)); do
+        echo "Duplicate $i: ${current_group[$i]}" >> "$TEMP_DIR/duplicates.txt"
+        dup_count=$((dup_count + 1))
+    done
+    
+    echo "Size: $file_size bytes ($(($file_size / 1024)) KB)" >> "$TEMP_DIR/duplicates.txt"
+fi
+
+# Display results
+if [ -f "$TEMP_DIR/duplicates.txt" ]; then
+    echo -e "\n--- Duplicate Files Report ---"
+    echo "Found $dup_count duplicate files in $group_count groups."
+    echo "Wasted space: $total_space bytes ($(($total_space / 1024)) KB)"
+    
+    # Display the duplicates
+    cat "$TEMP_DIR/duplicates.txt"
+    
+    # Offer options if duplicates were found
+    if [ "$dup_count" -gt 0 ]; then
+        # Save the duplicate info to a file in the current directory
+        cp "$TEMP_DIR/duplicates.txt" "./duplicate_files_report.txt"
+        echo -e "\nDuplicate file report saved to: $(pwd)/duplicate_files_report.txt"
+        
+        echo -e "\nWhat would you like to do with the duplicate files?"
+        echo "1: Delete all duplicates (keep originals)"
+        echo "2: Move duplicates to a separate folder"
+        echo "3: Do nothing"
+        echo -n "Enter your choice (1-3): "
+        read choice
+        
+        case $choice in
+            1)
+                echo "Deleting all duplicate files..."
+                grep "Duplicate [0-9]\+:" "$TEMP_DIR/duplicates.txt" | cut -d ':' -f2- | tr -d ' ' | while read file; do
+                    echo "Deleting: $file"
+                    rm -f "$file"
+                done
+                echo "Deletion complete."
+                ;;
+            2)
+                echo -n "Enter destination folder for duplicates: "
+                read dest_dir
+                
+                # Create destination directory if it doesn't exist
+                if [ ! -d "$dest_dir" ]; then
+                    mkdir -p "$dest_dir"
+                    if [ $? -ne 0 ]; then
+                        echo "Error: Failed to create directory '$dest_dir'."
+                        exit 1
+                    fi
+                    echo "Created directory: $dest_dir"
+                fi
+                
+                echo "Moving duplicate files to $dest_dir..."
+                grep "Duplicate [0-9]\+:" "$TEMP_DIR/duplicates.txt" | cut -d ':' -f2- | tr -d ' ' | while read file; do
+                    filename=$(basename "$file")
+                    echo "Moving: $file to $dest_dir/$filename"
+                    mv "$file" "$dest_dir/$filename"
+                done
+                echo "Move operation complete."
+                ;;
+            3)
+                echo "No changes made to your files."
+                ;;
+            *)
+                echo "Invalid choice. No changes made to your files."
+                ;;
+        esac
+    fi
+else
+    echo "No duplicate files found."
+fi
+
+echo -e "\nDuplicate file scan completed."
+exit 0

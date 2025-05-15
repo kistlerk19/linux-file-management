@@ -1,0 +1,279 @@
+#!/usr/bin/env bash
+
+# Disk Space Analyzer - A tool to analyze disk space usage with tree-like structure
+# Author: Claude
+# Version: 1.0
+
+# ANSI color codes for better visualization
+RESET="\033[0m"
+BOLD="\033[1m"
+RED="\033[31m"
+GREEN="\033[32m"
+YELLOW="\033[33m"
+BLUE="\033[34m"
+MAGENTA="\033[35m"
+CYAN="\033[36m"
+
+# Default values
+MIN_SIZE=0               # Minimum size in KB to display
+MAX_DEPTH=3              # Maximum depth for recursion
+SORT_BY="size"           # Sort by size (default) or name
+ORDER="desc"             # Sort order: desc (default) or asc
+TARGET_DIR="."           # Directory to analyze
+HUMAN_READABLE="true"    # Human readable format
+THRESHOLD=5              # Show only items larger than this percentage of parent
+
+# Function to display help information
+show_help() {
+    echo -e "${BOLD}Disk Space Analyzer${RESET} - Find space hogs on your disk"
+    echo
+    echo "Usage: $0 [OPTIONS] [DIRECTORY]"
+    echo
+    echo "Options:"
+    echo "  -h, --help             Show this help message"
+    echo "  -d, --depth NUMBER     Set maximum depth of directories to display (default: $MAX_DEPTH)"
+    echo "  -s, --sort FIELD       Sort by 'size' or 'name' (default: $SORT_BY)"
+    echo "  -o, --order ORDER      Sort order: 'asc' or 'desc' (default: $ORDER)"
+    echo "  -m, --min-size SIZE    Minimum size in KB to display (default: $MIN_SIZE)"
+    echo "  -r, --raw              Display raw byte sizes instead of human-readable format"
+    echo "  -t, --threshold PERC   Show only items using > PERC% of parent (default: $THRESHOLD)"
+    echo
+    echo "Example:"
+    echo "  $0 --depth 3 --sort size --min-size 1000 /home/user"
+    echo "  $0 -d 2 -s name -o asc -m 500 /var/log"
+    echo
+}
+
+# Function to format file sizes to human-readable format
+format_size() {
+    local size=$1
+    
+    if [ "$HUMAN_READABLE" = "true" ]; then
+        if [ $size -ge 1073741824 ]; then # GB
+            printf "%.2f GB" $(echo "scale=2; $size / 1073741824" | bc)
+        elif [ $size -ge 1048576 ]; then # MB
+            printf "%.2f MB" $(echo "scale=2; $size / 1048576" | bc)
+        elif [ $size -ge 1024 ]; then # KB
+            printf "%.2f KB" $(echo "scale=2; $size / 1024" | bc)
+        else # Bytes
+            printf "%d bytes" $size
+        fi
+    else
+        printf "%d" $size
+    fi
+}
+
+# Function to calculate percentage
+calculate_percentage() {
+    local size=$1
+    local parent_size=$2
+    
+    if [ $parent_size -eq 0 ]; then
+        echo "0"
+    else
+        echo "scale=1; 100 * $size / $parent_size" | bc
+    fi
+}
+
+# Function to analyze directory and return sorted results
+analyze_directory() {
+    local dir="$1"
+    local current_depth=$2
+    local parent_size=$3
+    local prefix="$4"
+    
+    # Get size of the current directory
+    local dir_size=$(du -sk "$dir" 2>/dev/null | cut -f1)
+    if [ -z "$dir_size" ]; then
+        dir_size=0
+    fi
+    dir_size=$((dir_size * 1024)) # Convert KB to bytes
+    
+    # If we've reached max depth or size is too small, don't go deeper
+    if [ $current_depth -gt $MAX_DEPTH ] || [ $dir_size -lt $((MIN_SIZE * 1024)) ]; then
+        return
+    fi
+    
+    # Calculate percentage of parent directory
+    local percentage=$(calculate_percentage $dir_size $parent_size)
+    
+    # Prefix formatting for tree structure
+    if [ "$prefix" != "" ]; then
+        local display_prefix="${prefix}├── "
+        local next_prefix="${prefix}│   "
+    else
+        local display_prefix=""
+        local next_prefix="    "
+    fi
+    
+    # Display current directory with size if not the initial call
+    if [ "$dir" != "$TARGET_DIR" ] || [ $current_depth -gt 1 ]; then
+        local dir_name=$(basename "$dir")
+        local formatted_size=$(format_size $dir_size)
+        local display_percentage=""
+        
+        if [ $parent_size -ne 0 ]; then
+            display_percentage=" (${percentage}%)"
+        fi
+        
+        if [ "$percentage" = "" ] || [ $(echo "$percentage >= $THRESHOLD" | bc) -eq 1 ] || [ $parent_size -eq 0 ]; then
+            if [ $dir_size -ge $((MIN_SIZE * 1024)) ]; then
+                echo -e "${display_prefix}${BOLD}${BLUE}$dir_name/${RESET} ${CYAN}$formatted_size${RESET}${display_percentage}"
+            fi
+        fi
+    fi
+    
+    # Skip further analysis if at max depth
+    if [ $current_depth -ge $MAX_DEPTH ]; then
+        return
+    fi
+    
+    # Get list of subdirectories and files with their sizes
+    local tmp_file=$(mktemp)
+    
+    # First process directories
+    find "$dir" -maxdepth 1 -mindepth 1 -type d 2>/dev/null | while read subdir; do
+        local size=$(du -sk "$subdir" 2>/dev/null | cut -f1)
+        if [ -z "$size" ]; then
+            size=0
+        fi
+        size=$((size * 1024)) # Convert KB to bytes
+        
+        if [ $size -ge $((MIN_SIZE * 1024)) ]; then
+            echo "$size:$subdir:d" >> "$tmp_file"
+        fi
+    done
+    
+    # Then process files
+    find "$dir" -maxdepth 1 -mindepth 1 -type f 2>/dev/null | while read file; do
+        local size=$(stat -c '%s' "$file" 2>/dev/null)
+        if [ -z "$size" ]; then
+            size=0
+        fi
+        
+        if [ $size -ge $((MIN_SIZE * 1024)) ]; then
+            echo "$size:$file:f" >> "$tmp_file"
+        fi
+    done
+    
+    # Sort entries by size or name
+    if [ "$SORT_BY" = "size" ]; then
+        if [ "$ORDER" = "asc" ]; then
+            sort -t: -k1n "$tmp_file" > "$tmp_file.sorted"
+        else
+            sort -t: -k1nr "$tmp_file" > "$tmp_file.sorted"
+        fi
+    else # sort by name
+        if [ "$ORDER" = "asc" ]; then
+            sort -t: -k2 "$tmp_file" > "$tmp_file.sorted"
+        else
+            sort -t: -k2r "$tmp_file" > "$tmp_file.sorted"
+        fi
+    fi
+    
+    # Process the sorted entries
+    local items_count=$(wc -l < "$tmp_file.sorted")
+    local current_item=0
+    
+    while IFS=: read -r size path type; do
+        current_item=$((current_item + 1))
+        
+        # Adjust prefix for last item
+        if [ $current_item -eq $items_count ]; then
+            display_prefix="${prefix}└── "
+            next_prefix="${prefix}    "
+        fi
+        
+        # Calculate percentage of parent directory
+        local percentage=$(calculate_percentage $size $dir_size)
+        
+        # Skip if percentage is below threshold, except for the initial call
+        if [ "$percentage" = "" ] || [ $(echo "$percentage >= $THRESHOLD" | bc) -eq 1 ] || [ $parent_size -eq 0 ]; then
+            if [ "$type" = "d" ]; then
+                # Recursively analyze subdirectory
+                analyze_directory "$path" $((current_depth + 1)) $dir_size "$next_prefix"
+            else
+                # Display file with size
+                local file_name=$(basename "$path")
+                local formatted_size=$(format_size $size)
+                echo -e "${display_prefix}${GREEN}$file_name${RESET} ${CYAN}$formatted_size${RESET} (${percentage}%)"
+            fi
+        fi
+    done < "$tmp_file.sorted"
+    
+    # Clean up temporary files
+    rm -f "$tmp_file" "$tmp_file.sorted"
+}
+
+# Parse command line arguments
+while [[ $# -gt 0 ]]; do
+    key="$1"
+    
+    case $key in
+        -h|--help)
+            show_help
+            exit 0
+            ;;
+        -d|--depth)
+            MAX_DEPTH="$2"
+            shift
+            shift
+            ;;
+        -s|--sort)
+            SORT_BY="$2"
+            if [ "$SORT_BY" != "size" ] && [ "$SORT_BY" != "name" ]; then
+                echo "Error: Sort field must be 'size' or 'name'"
+                exit 1
+            fi
+            shift
+            shift
+            ;;
+        -o|--order)
+            ORDER="$2"
+            if [ "$ORDER" != "asc" ] && [ "$ORDER" != "desc" ]; then
+                echo "Error: Sort order must be 'asc' or 'desc'"
+                exit 1
+            fi
+            shift
+            shift
+            ;;
+        -m|--min-size)
+            MIN_SIZE="$2"
+            shift
+            shift
+            ;;
+        -r|--raw)
+            HUMAN_READABLE="false"
+            shift
+            ;;
+        -t|--threshold)
+            THRESHOLD="$2"
+            shift
+            shift
+            ;;
+        *)
+            TARGET_DIR="$1"
+            shift
+            ;;
+    esac
+done
+
+# Check if the target directory exists
+if [ ! -d "$TARGET_DIR" ]; then
+    echo -e "${RED}Error: Directory '$TARGET_DIR' does not exist${RESET}"
+    exit 1
+fi
+
+# Convert to absolute path
+TARGET_DIR=$(cd "$TARGET_DIR" && pwd)
+
+# Display header
+echo -e "${BOLD}Disk Space Analysis for:${RESET} ${MAGENTA}$TARGET_DIR${RESET}"
+echo -e "${BOLD}Parameters:${RESET} max-depth=$MAX_DEPTH, min-size=${MIN_SIZE}KB, sort-by=$SORT_BY, order=$ORDER, threshold=$THRESHOLD%"
+echo
+
+# Start the analysis
+analyze_directory "$TARGET_DIR" 1 0 ""
+
+echo
+echo -e "${BOLD}Analysis complete.${RESET}"

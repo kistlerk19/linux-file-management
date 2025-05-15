@@ -1,0 +1,336 @@
+#!/usr/bin/env bash
+
+# Bulk File Renamer - A tool to rename multiple files using patterns and rules
+# Usage: ./bulk_file_renamer.sh [options]
+
+set -e  # Exit on error
+
+# ANSI color codes for better readability
+GREEN='\033[0;32m'
+BLUE='\033[0;34m'
+YELLOW='\033[1;33m'
+RED='\033[0;31m'
+NC='\033[0m' # No Color
+
+# Help function
+show_help() {
+    echo -e "${BLUE}Bulk File Renamer${NC}"
+    echo "A tool to rename multiple files using patterns and rules."
+    echo
+    echo -e "${YELLOW}Usage:${NC}"
+    echo "  ./bulk_file_renamer.sh [options]"
+    echo
+    echo -e "${YELLOW}Options:${NC}"
+    echo "  -h, --help                   Show this help message"
+    echo "  -d, --directory DIRECTORY    Specify directory containing files (default: current directory)"
+    echo "  -f, --filter PATTERN         Filter files matching pattern (supports glob patterns)"
+    echo "  -p, --prefix PREFIX          Add prefix to filename"
+    echo "  -s, --suffix SUFFIX          Add suffix to filename (before extension)"
+    echo "  -r, --replace OLD NEW        Replace OLD pattern with NEW in filename"
+    echo "  -c, --counter START WIDTH    Add counter starting at START with WIDTH digits"
+    echo "  -l, --lowercase              Convert filename to lowercase"
+    echo "  -u, --uppercase              Convert filename to uppercase"
+    echo "  -t, --trim                   Trim whitespace from filename"
+    echo "  -n, --number-files           Number files in sequence (01_, 02_, etc.)"
+    echo "  --date-prefix FORMAT         Add date prefix with specified format (default: YYYY-MM-DD)"
+    echo "  --remove-chars CHARS         Remove specified characters from filename"
+    echo "  --dry-run                    Show what would be done without actually renaming files"
+    echo "  --regex PATTERN REPLACEMENT  Use regular expression to rename files"
+    echo
+    echo -e "${YELLOW}Examples:${NC}"
+    echo "  ./bulk_file_renamer.sh --filter '*.jpg' --prefix 'vacation_' --date-prefix"
+    echo "  ./bulk_file_renamer.sh --filter '*.txt' --replace 'old' 'new'"
+    echo "  ./bulk_file_renamer.sh --filter '*.png' --counter 1 3 --suffix '_image'"
+    echo "  ./bulk_file_renamer.sh --regex 'file_([0-9]+)' 'document_\1'"
+    echo
+}
+
+# Default values
+DIRECTORY="."
+DRY_RUN=false
+COUNTER_START=1
+COUNTER_WIDTH=2
+DATE_FORMAT="%Y-%m-%d"
+
+# Parse command-line arguments
+while [[ $# -gt 0 ]]; do
+    case $1 in
+        -h|--help)
+            show_help
+            exit 0
+            ;;
+        -d|--directory)
+            DIRECTORY="$2"
+            shift 2
+            ;;
+        -f|--filter)
+            FILE_FILTER="$2"
+            shift 2
+            ;;
+        -p|--prefix)
+            PREFIX="$2"
+            shift 2
+            ;;
+        -s|--suffix)
+            SUFFIX="$2"
+            shift 2
+            ;;
+        -r|--replace)
+            REPLACE_OLD="$2"
+            REPLACE_NEW="$3"
+            shift 3
+            ;;
+        -c|--counter)
+            USE_COUNTER=true
+            COUNTER_START="$2"
+            COUNTER_WIDTH="$3"
+            shift 3
+            ;;
+        -l|--lowercase)
+            USE_LOWERCASE=true
+            shift
+            ;;
+        -u|--uppercase)
+            USE_UPPERCASE=true
+            shift
+            ;;
+        -t|--trim)
+            USE_TRIM=true
+            shift
+            ;;
+        -n|--number-files)
+            NUMBER_FILES=true
+            shift
+            ;;
+        --date-prefix)
+            USE_DATE_PREFIX=true
+            if [[ "$2" != -* && "$2" != "" ]]; then
+                DATE_FORMAT="$2"
+                shift
+            fi
+            shift
+            ;;
+        --remove-chars)
+            REMOVE_CHARS="$2"
+            shift 2
+            ;;
+        --dry-run)
+            DRY_RUN=true
+            shift
+            ;;
+        --regex)
+            REGEX_PATTERN="$2"
+            REGEX_REPLACEMENT="$3"
+            shift 3
+            ;;
+        *)
+            echo -e "${RED}Error: Unknown option: $1${NC}"
+            show_help
+            exit 1
+            ;;
+    esac
+done
+
+# Check if directory exists
+if [ ! -d "$DIRECTORY" ]; then
+    echo -e "${RED}Error: Directory '$DIRECTORY' does not exist${NC}"
+    exit 1
+fi
+
+# Check if no options were provided
+if [ -z "$FILE_FILTER" ] && [ -z "$PREFIX" ] && [ -z "$SUFFIX" ] && [ -z "$REPLACE_OLD" ] && \
+   [ -z "$USE_COUNTER" ] && [ -z "$USE_LOWERCASE" ] && [ -z "$USE_UPPERCASE" ] && \
+   [ -z "$USE_TRIM" ] && [ -z "$NUMBER_FILES" ] && [ -z "$USE_DATE_PREFIX" ] && \
+   [ -z "$REMOVE_CHARS" ] && [ -z "$REGEX_PATTERN" ]; then
+    echo -e "${YELLOW}No renaming options provided. Showing help:${NC}"
+    show_help
+    exit 0
+fi
+
+# Initialize counter
+counter=$COUNTER_START
+
+# Get current date
+current_date=$(date +"$DATE_FORMAT")
+
+# Function to apply all transformations to a filename
+transform_filename() {
+    local original_name="$1"
+    local base_name="${original_name%.*}"
+    local extension="${original_name##*.}"
+    
+    # If the file has no extension, use the entire name as base_name
+    if [ "$original_name" = "$extension" ]; then
+        base_name="$original_name"
+        extension=""
+    else
+        extension=".$extension"
+    fi
+    
+    local new_name="$base_name"
+    
+    # Apply regex if specified
+    if [ -n "$REGEX_PATTERN" ]; then
+        if [[ "$base_name" =~ $REGEX_PATTERN ]]; then
+            # Use Bash's built-in regex capabilities
+            # We need to create a temporary variable to hold the result
+            local temp_name
+            temp_name=$(echo "$base_name" | sed -E "s/$REGEX_PATTERN/$REGEX_REPLACEMENT/")
+            new_name="$temp_name"
+        fi
+    fi
+    
+    # Apply transformations
+    if [ "$USE_LOWERCASE" = true ]; then
+        new_name=$(echo "$new_name" | tr '[:upper:]' '[:lower:]')
+    fi
+    
+    if [ "$USE_UPPERCASE" = true ]; then
+        new_name=$(echo "$new_name" | tr '[:lower:]' '[:upper:]')
+    fi
+    
+    if [ "$USE_TRIM" = true ]; then
+        new_name=$(echo "$new_name" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
+    fi
+    
+    if [ -n "$REMOVE_CHARS" ]; then
+        # Create a character class for sed by escaping special characters
+        local escaped_chars
+        escaped_chars=$(echo "$REMOVE_CHARS" | sed 's/[^a-zA-Z0-9]/\\&/g')
+        new_name=$(echo "$new_name" | sed "s/[$escaped_chars]//g")
+    fi
+    
+    if [ -n "$REPLACE_OLD" ]; then
+        new_name="${new_name//$REPLACE_OLD/$REPLACE_NEW}"
+    fi
+    
+    # Prepare formatted counter string
+    local counter_format="%0${COUNTER_WIDTH}d"
+    local counter_str=$(printf "$counter_format" $counter)
+    
+    # Build the final filename
+    local result=""
+    
+    # Add date prefix if requested
+    if [ "$USE_DATE_PREFIX" = true ]; then
+        result="${current_date}_${result}"
+    fi
+    
+    # Add numbering if requested
+    if [ "$NUMBER_FILES" = true ]; then
+        result="${counter_str}_${result}"
+    fi
+    
+    # Add user prefix if provided
+    if [ -n "$PREFIX" ]; then
+        result="${result}${PREFIX}"
+    fi
+    
+    # Add the transformed name
+    result="${result}${new_name}"
+    
+    # Add counter if requested (in the middle)
+    if [ "$USE_COUNTER" = true ]; then
+        result="${result}_${counter_str}"
+    fi
+    
+    # Add suffix if provided
+    if [ -n "$SUFFIX" ]; then
+        result="${result}${SUFFIX}"
+    fi
+    
+    # Add extension back
+    result="${result}${extension}"
+    
+    # Increment counter for next file
+    ((counter++))
+    
+    echo "$result"
+}
+
+# Get list of files
+cd "$DIRECTORY" || exit 1
+if [ -n "$FILE_FILTER" ]; then
+    # Handle file filters using find to support wildcard patterns
+    files=$(find . -maxdepth 1 -type f -name "$FILE_FILTER" -not -path "*/\.*" | sort | sed 's|^\./||')
+else
+    # Get all visible files in the directory
+    files=$(find . -maxdepth 1 -type f -not -path "*/\.*" | sort | sed 's|^\./||')
+fi
+
+# Count files
+file_count=$(echo "$files" | grep -c "^" || true)
+
+if [ "$file_count" -eq 0 ]; then
+    echo -e "${YELLOW}No files match the criteria.${NC}"
+    exit 0
+fi
+
+echo -e "${BLUE}Bulk File Renamer${NC}"
+echo -e "${YELLOW}Found $file_count files to process in '$DIRECTORY'${NC}"
+
+if [ "$DRY_RUN" = true ]; then
+    echo -e "${YELLOW}DRY RUN: No files will be renamed${NC}"
+fi
+
+# Process files
+renamed_count=0
+total_files=0
+skipped_files=0
+
+while IFS= read -r file; do
+    # Skip if empty line
+    [ -z "$file" ] && continue
+    
+    # Skip this script itself to avoid renaming it during execution
+    if [[ "$file" == "bulk_file_renamer.sh" || "$file" == */*"bulk_file_renamer.sh" ]]; then
+        ((skipped_files++))
+        continue
+    fi
+    
+    # Skip if not a regular file
+    if [ ! -f "$file" ]; then
+        continue
+    fi
+    
+    ((total_files++))
+    
+    # Generate new filename
+    new_name=$(transform_filename "$(basename "$file")")
+    
+    # Skip if filename didn't change
+    if [ "$(basename "$file")" = "$new_name" ]; then
+        echo -e "  ${YELLOW}Skipping${NC} '$file' ${YELLOW}(no change)${NC}"
+        ((skipped_files++))
+        continue
+    fi
+    
+    # Check if target file already exists
+    if [ -e "$new_name" ] && [ "$(basename "$file")" != "$new_name" ]; then
+        echo -e "  ${RED}Skipping${NC} '$file' → '$new_name' ${RED}(target already exists)${NC}"
+        ((skipped_files++))
+        continue
+    fi
+    
+    # Perform or simulate the rename
+    if [ "$DRY_RUN" = true ]; then
+        echo -e "  ${GREEN}Would rename${NC} '$file' → '$new_name'"
+    else
+        echo -e "  ${GREEN}Renaming${NC} '$file' → '$new_name'"
+        mv "$file" "$new_name"
+    fi
+    
+    ((renamed_count++))
+done <<< "$files"
+
+# Summary
+echo 
+echo -e "${BLUE}Summary:${NC}"
+echo -e "  Total files: $total_files"
+echo -e "  Renamed: $renamed_count"
+echo -e "  Skipped: $skipped_files"
+echo
+
+if [ "$DRY_RUN" = true ] && [ "$renamed_count" -gt 0 ]; then
+    echo -e "${YELLOW}This was a dry run. Run without --dry-run to perform actual renaming.${NC}"
+fi

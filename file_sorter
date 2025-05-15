@@ -1,0 +1,199 @@
+#!/usr/bin/env bash
+
+# Automatic File Sorter
+# This script organizes files in a directory by moving them into category-based subfolders
+
+# Color codes for output formatting
+GREEN='\033[0;32m'
+BLUE='\033[0;34m'
+YELLOW='\033[1;33m'
+RED='\033[0;31m'
+NC='\033[0m' # No Color
+
+# Function to print divider
+print_divider() {
+    echo -e "${BLUE}=================================================${NC}"
+}
+
+# Function to create a folder if it doesn't exist
+create_folder() {
+    local directory="$1"
+    local folder_name="$2"
+    local folder_path="${directory}/${folder_name}"
+    
+    if [ ! -d "$folder_path" ]; then
+        mkdir -p "$folder_path"
+        echo -e "${GREEN}Created folder: ${folder_name}${NC}"
+    fi
+}
+
+# Function to get file category based on extension
+get_file_category() {
+    local extension=$(echo "$1" | tr '[:upper:]' '[:lower:]')
+    
+    # Documents
+    if [[ "$extension" =~ \.(pdf|doc|docx|txt|rtf|odt|xls|xlsx|ppt|pptx|csv)$ ]]; then
+        echo "Documents"
+    
+    # Images
+    elif [[ "$extension" =~ \.(jpg|jpeg|png|gif|bmp|tiff|svg|webp)$ ]]; then
+        echo "Images"
+    
+    # Videos
+    elif [[ "$extension" =~ \.(mp4|avi|mov|mkv|wmv|flv|webm)$ ]]; then
+        echo "Videos"
+    
+    # Audio
+    elif [[ "$extension" =~ \.(mp3|wav|ogg|flac|aac|m4a)$ ]]; then
+        echo "Audio"
+    
+    # Archives
+    elif [[ "$extension" =~ \.(zip|rar|7z|tar|gz|bz2)$ ]]; then
+        echo "Archives"
+    
+    # Code
+    elif [[ "$extension" =~ \.(py|java|cpp|c|html|css|js|php|rb|go|json|xml|sh|bash)$ ]]; then
+        echo "Code"
+    
+    # Executables
+    elif [[ "$extension" =~ \.(exe|msi|app|bat|sh)$ ]]; then
+        echo "Executables"
+    
+    # Others
+    else
+        echo "Others"
+    fi
+}
+
+# Function to sort files in a directory
+sort_files() {
+    local directory_path="$1"
+    
+    # Convert to absolute path if not already
+    directory_path=$(realpath "$directory_path")
+    
+    # Check if directory exists
+    if [ ! -d "$directory_path" ]; then
+        echo -e "${RED}Error: Directory '$directory_path' does not exist.${NC}"
+        return 1
+    fi
+    
+    echo -e "\n${BLUE}Scanning directory: ${directory_path}${NC}\n"
+    
+    # Initialize counters for stats
+    local total_files=0
+    local moved_files=0
+    
+    # Arrays to keep track of categories and counts
+    declare -A category_counts
+    
+    # Process each file in the directory (not recursive)
+    for file in "$directory_path"/*; do
+        # Skip directories and hidden files
+        if [ -d "$file" ] || [[ $(basename "$file") == .* ]]; then
+            continue
+        fi
+        
+        ((total_files++))
+        
+        # Get filename and extension
+        filename=$(basename "$file")
+        extension="${filename##*.}"
+        if [ "$filename" = "$extension" ]; then
+            extension=""
+        else
+            extension=".$extension"
+        fi
+        
+        # Get category for the file
+        category=$(get_file_category "$extension")
+        
+        # Create category folder if it doesn't exist
+        create_folder "$directory_path" "$category"
+        
+        # Skip if file already in its category folder
+        if [ "$(dirname "$file")" = "${directory_path}/${category}" ]; then
+            continue
+        fi
+        
+        # Destination path for the file
+        destination="${directory_path}/${category}/${filename}"
+        
+        # Handle file conflicts
+        if [ -f "$destination" ]; then
+            base_name="${filename%.*}"
+            timestamp=$(date +"%Y%m%d_%H%M%S")
+            
+            if [ -z "$extension" ]; then
+                new_filename="${base_name}_${timestamp}"
+            else
+                new_filename="${base_name}_${timestamp}${extension}"
+            fi
+            
+            destination="${directory_path}/${category}/${new_filename}"
+        fi
+        
+        # Move the file
+        if mv "$file" "$destination" 2>/dev/null; then
+            echo -e "${GREEN}Moved: ${filename} → ${category}/$(basename "$destination")${NC}"
+            ((moved_files++))
+            
+            # Update category count
+            if [ -z "${category_counts[$category]}" ]; then
+                category_counts[$category]=1
+            else
+                ((category_counts[$category]++))
+            fi
+        else
+            echo -e "${RED}Error moving: ${filename}${NC}"
+        fi
+    done
+    
+    # Display summary
+    echo -e "\n${BLUE}=================================================${NC}"
+    echo -e "${YELLOW}File Sorting Complete!${NC}"
+    echo -e "${YELLOW}Total files scanned: ${total_files}${NC}"
+    echo -e "${YELLOW}Files moved: ${moved_files}${NC}"
+    
+    # Show category breakdown
+    if [ ${#category_counts[@]} -gt 0 ]; then
+        echo -e "\n${YELLOW}Files organized by category:${NC}"
+        for category in "${!category_counts[@]}"; do
+            echo -e "  - ${category}: ${category_counts[$category]} file(s)"
+        done
+    fi
+    
+    echo -e "${BLUE}=================================================${NC}"
+    return 0
+}
+
+# Main function
+main() {
+    print_divider
+    echo -e "${YELLOW}       AUTOMATIC FILE SORTER${NC}"
+    print_divider
+    
+    while true; do
+        # Get directory path from user
+        echo -e "\nEnter the directory path to sort (or 'q' to quit):"
+        read -r directory
+        
+        if [ "$directory" = "q" ] || [ "$directory" = "Q" ]; then
+            echo -e "\n${YELLOW}Exiting File Sorter. Goodbye!${NC}"
+            break
+        fi
+        
+        # Sort the files
+        sort_files "$directory"
+        
+        echo -e "\nDo you want to sort another directory? (y/n):"
+        read -r choice
+        if [ "$choice" != "y" ] && [ "$choice" != "Y" ]; then
+            echo -e "\n${YELLOW}Exiting File Sorter. Goodbye!${NC}"
+            break
+        fi
+    done
+}
+
+# Run the script
+main

@@ -1,0 +1,226 @@
+#!/usr/bin/env bash
+
+# File Encryption Tool
+# This script encrypts and decrypts files using OpenSSL's AES-256-CBC encryption
+# with PBKDF2 key derivation for enhanced security
+
+VERSION="1.0"
+CIPHER="aes-256-cbc"  # Strong encryption algorithm
+ITERATIONS=10000      # Number of PBKDF2 iterations (higher = more secure but slower)
+
+# ANSI color codes for better user experience
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+BLUE='\033[0;34m'
+YELLOW='\033[1;33m'
+NC='\033[0m' # No Color
+
+# Display banner
+show_banner() {
+    echo -e "${BLUE}"
+    echo "╔════════════════════════════════════════╗"
+    echo "║          FILE ENCRYPTION TOOL          ║"
+    echo "║                v${VERSION}                    ║"
+    echo "╚════════════════════════════════════════╝"
+    echo -e "${NC}"
+}
+
+# Display help message
+show_help() {
+    echo -e "${YELLOW}Usage:${NC}"
+    echo "  $0 [options]"
+    echo
+    echo -e "${YELLOW}Options:${NC}"
+    echo "  -e, --encrypt FILE     Encrypt the specified file"
+    echo "  -d, --decrypt FILE     Decrypt the specified file"
+    echo "  -h, --help             Display this help message and exit"
+    echo
+    echo -e "${YELLOW}Examples:${NC}"
+    echo "  $0 -e sensitive_document.pdf"
+    echo "  $0 -d sensitive_document.pdf.enc"
+    echo
+}
+
+# Function to securely get password without echoing to terminal
+get_password() {
+    local prompt="$1"
+    local password
+    
+    # Try using read with -s flag for secure input
+    if read -s -p "$prompt" password </dev/tty; then
+        echo >&2 # Add newline since read -s doesn't
+        echo "$password"
+        return 0
+    else
+        echo "Error reading password" >&2
+        return 1
+    fi
+}
+
+# Function to encrypt a file
+encrypt_file() {
+    local input_file="$1"
+    local output_file="${input_file}.enc"
+    
+    # Check if input file exists
+    if [ ! -f "$input_file" ]; then
+        echo -e "${RED}Error: File '$input_file' not found${NC}"
+        exit 1
+    fi
+    
+    # Check if output file already exists
+    if [ -f "$output_file" ]; then
+        read -p "Output file '$output_file' already exists. Overwrite? (y/n): " confirm
+        if [[ "$confirm" != [yY] ]]; then
+            echo -e "${YELLOW}Encryption cancelled${NC}"
+            exit 0
+        fi
+    fi
+    
+    # Get password
+    local password=$(get_password "Enter password for encryption: ")
+    local password_confirm=$(get_password "Confirm password: ")
+    
+    if [ "$password" != "$password_confirm" ]; then
+        echo -e "${RED}Error: Passwords do not match${NC}"
+        exit 1
+    fi
+    
+    # Generate a random salt (16 bytes)
+    local salt=$(openssl rand -hex 8)
+    
+    # Encrypt the file with salt prepended to the encrypted file
+    echo "$salt" > "$output_file"
+    
+    echo -e "${GREEN}Encrypting file...${NC}"
+    
+    # Use password and salt with PBKDF2 for key derivation
+    # The -pbkdf2 option tells OpenSSL to use PBKDF2 for key derivation
+    # The -iter option specifies the number of iterations
+    openssl enc -$CIPHER -salt -pbkdf2 -iter $ITERATIONS \
+        -in "$input_file" \
+        -out "$output_file.tmp" \
+        -pass "pass:$password" 2>/dev/null
+    
+    # Check if encryption was successful
+    if [ $? -ne 0 ]; then
+        echo -e "${RED}Error: Encryption failed${NC}"
+        rm -f "$output_file" "$output_file.tmp"
+        exit 1
+    fi
+    
+    # Append the encrypted content to the salt
+    cat "$output_file.tmp" >> "$output_file"
+    rm -f "$output_file.tmp"
+    
+    echo -e "${GREEN}File encrypted successfully: $output_file${NC}"
+    echo -e "${YELLOW}Warning: Keep your password safe. If lost, the file cannot be recovered.${NC}"
+}
+
+# Function to decrypt a file
+decrypt_file() {
+    local input_file="$1"
+    local output_file="${input_file%.enc}"
+    
+    # Check if input file exists
+    if [ ! -f "$input_file" ]; then
+        echo -e "${RED}Error: File '$input_file' not found${NC}"
+        exit 1
+    fi
+    
+    # Check if it's likely an encrypted file
+    if [[ "$input_file" != *.enc ]]; then
+        read -p "File doesn't have .enc extension. Try to decrypt anyway? (y/n): " confirm
+        if [[ "$confirm" != [yY] ]]; then
+            echo -e "${YELLOW}Decryption cancelled${NC}"
+            exit 0
+        fi
+    fi
+    
+    # Check if output file already exists
+    if [ -f "$output_file" ]; then
+        read -p "Output file '$output_file' already exists. Overwrite? (y/n): " confirm
+        if [[ "$confirm" != [yY] ]]; then
+            echo -e "${YELLOW}Decryption cancelled${NC}"
+            exit 0
+        fi
+    fi
+    
+    # Get password
+    local password=$(get_password "Enter password for decryption: ")
+    
+    # Extract the salt from the encrypted file
+    local salt=$(head -n 1 "$input_file")
+    
+    # Create a temporary file with the encrypted data (without the salt line)
+    tail -n +2 "$input_file" > "$input_file.tmp"
+    
+    echo -e "${GREEN}Decrypting file...${NC}"
+    
+    # Decrypt using the same parameters as encryption
+    openssl enc -d -$CIPHER -salt -pbkdf2 -iter $ITERATIONS \
+        -in "$input_file.tmp" \
+        -out "$output_file" \
+        -pass "pass:$password" 2>/dev/null
+    
+    # Check if decryption was successful
+    if [ $? -ne 0 ]; then
+        echo -e "${RED}Error: Decryption failed. Incorrect password or corrupted file.${NC}"
+        rm -f "$output_file" "$input_file.tmp"
+        exit 1
+    fi
+    
+    # Clean up temporary file
+    rm -f "$input_file.tmp"
+    
+    echo -e "${GREEN}File decrypted successfully: $output_file${NC}"
+}
+
+# Main function to handle script arguments
+main() {
+    # Display banner
+    show_banner
+    
+    # If no arguments are provided, show help
+    if [ $# -eq 0 ]; then
+        show_help
+        exit 0
+    fi
+    
+    # Parse command line arguments
+    while [ $# -gt 0 ]; do
+        case "$1" in
+            -e|--encrypt)
+                shift
+                if [ $# -eq 0 ]; then
+                    echo -e "${RED}Error: No file specified for encryption${NC}"
+                    show_help
+                    exit 1
+                fi
+                encrypt_file "$1"
+                ;;
+            -d|--decrypt)
+                shift
+                if [ $# -eq 0 ]; then
+                    echo -e "${RED}Error: No file specified for decryption${NC}"
+                    show_help
+                    exit 1
+                fi
+                decrypt_file "$1"
+                ;;
+            -h|--help)
+                show_help
+                exit 0
+                ;;
+            *)
+                echo -e "${RED}Error: Unknown option '$1'${NC}"
+                show_help
+                exit 1
+                ;;
+        esac
+        shift
+    done
+}
+
+# Execute the main function
+main "$@"
