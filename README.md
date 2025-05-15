@@ -77,13 +77,13 @@ Keeps directories synchronized across different locations.
 
 ```bash
 # Clone the repository
-git clone https://github.com/yourusername/bash-file-management.git
+git clone https://github.com/kistlerk19/linux-file-management.git
 
 # Navigate to the project directory
 cd linux-file-management
 
 # Make scripts executable
-chmod +x *.sh
+chmod +x file_sorter file_renamer file_renamer duplicate_file_finder file_backup_system disk_space_analyzer file_encryption_tool file_sync
 ```
 
 ## Usage
